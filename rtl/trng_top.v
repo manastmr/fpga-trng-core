@@ -12,7 +12,8 @@ module trng_top (
     output wire [31:0] ones_count,
     output wire [31:0] zeros_count,
     output wire [31:0] runs_count,
-    output wire [31:0] longest_run
+    output wire [31:0] longest_run,
+    output wire health_alarm
 );
 
     wire raw_ro_signal;
@@ -60,6 +61,14 @@ module trng_top (
         .zeros_count(zeros_count),
         .runs_count(runs_count),
         .longest_run(longest_run)
+    );
+    
+    health_monitor #( .CUTOFF_LIMIT(32)) u_health_monitor (
+        .clk(clk),
+        .rst_n(rst_n),
+        .extracted_bit(extracted_bit),
+        .extractor_valid(extractor_valid),
+        .health_alarm(health_alarm)
     );
 
 endmodule

@@ -15,6 +15,8 @@ module extractor_tb;
     wire [31:0] runs_count;
     wire [31:0] longest_run;
 
+    wire health_alarm;
+
     von_neumann_extractor my_extractor (
         .clk(clk),
         .rst(rst),
@@ -34,6 +36,16 @@ module extractor_tb;
         .zeros_count(zeros_count),
         .runs_count(runs_count),
         .longest_run(longest_run)
+    );
+
+    health_monitor #(
+        .CUTOFF_LIMIT(32)
+    ) u_health_monitor (
+        .clk(clk),
+        .rst_n(~rst),
+        .extracted_bit(clean_bit),
+        .extractor_valid(bit_valid),
+        .health_alarm(health_alarm)
     );
 
     always #5 clk = ~clk;
@@ -78,7 +90,26 @@ module extractor_tb;
         $display("Zeros: %d", zeros_count);
         $display("Runs: %d", runs_count);
         $display("Longest Run: %d", longest_run);
+        $display("Health Alarm Nominal State: %b", health_alarm);
         $display("--------------------------");
+
+        enable = 1;
+        for (i = 0; i < 80; i = i + 1) begin
+            @(negedge clk);
+            if (i % 2 == 0) begin
+                noisy_bit = 1;
+            end else begin
+                noisy_bit = 0;
+            end
+        end
+
+        @(negedge clk);
+        enable = 0;
+        #20;
+
+        $display("--- FAULT TEST (STUCK EXTRACTED STREAM) ---");
+        $display("Health Alarm Triggered State: %b", health_alarm);
+        $display("-------------------------------------------");
 
         $finish;
     end
