@@ -4,71 +4,92 @@
 
 This repository contains a lightweight, fully synthesizable Verilog-2001 True Random Number Generator (TRNG) IP core, designed for deployment on AMD/Xilinx FPGAs.
 
-The core utilizes a multi-stage Ring Oscillator (RO) bank as a physical entropy source, exploiting semiconductor phase jitter. The raw, biased entropy stream is safely sampled, conditioned via a mathematical Von Neumann Extractor to achieve a balanced 50/50 bit ratio, and formatted into a 32-bit parallel random word.
+The core utilizes a Ring Oscillator (RO) bank combined via an XOR tree as a physical entropy source, exploiting semiconductor phase jitter. The raw entropy stream is safely sampled via a 2-stage synchronizer, conditioned via a mathematical Von Neumann Extractor (Non-Overlapping Pair Evaluator) to eliminate silicon bias, and formatted into a 32-bit parallel random word.
 
-A unique feature of this design is the integrated Real-Time Statistical Verification engine, which provides continuous on-chip health monitoring of the entropy quality through diagnostic counters.
+An integrated Real-Time Statistical Verification engine provides continuous on-chip health monitoring of the conditioned entropy stream through five 32-bit diagnostic counters.
 
 ## Architecture
 
-The TRNG architecture is composed of a strictly pipelined hierarchy:
+```mermaid
+flowchart TD
+    subgraph ENTROPY["1. Entropy Source & CDC"]
+        RO["ro_bank.v<br/>Ring Oscillator Bank + XOR Combiner"] -->|Raw Unclocked Jitter| SMP["ro_sampler.v<br/>2-Stage FF Synchronizer"]
+    end
 
-`trng_top.v` (Top-Level Integration)
-1.  **Entropy Source:** `ro_bank.v` (XOR-linked combinatorial Ring Oscillators).
-2.  **Sampling & CDC:** `ro_sampler.v` (2-stage synchronizer / metastability filter).
-3.  **Conditioning:** `von_neumann_extractor.v` (Removes silicon bias via pair filtering).
-4.  **Formatting:** `shift_register_32bit.v` (Serial-to-parallel conversion with handshaking).
-5.  **Analytics:** `bit_statistics.v` (On-chip statistical diagnostics: Ones/Zeros ratio, Run tracking).
+    subgraph CONDITIONING["2. Bias Conditioning"]
+        SMP -->|Sampled Bit Stream| VNE["von_neumann_extractor.v<br/>Non-Overlapping Pair Evaluator<br/>(00/11: Discard | 01: '0' | 10: '1')"]
+    end
 
-*(Refer to the system architecture diagram provided with this report for a visual representation.)*
+    subgraph OUTPUT_STAGE["3. Output Formatting"]
+        VNE -->|Conditioned Bitstream<br/>extracted_bit + extractor_valid| SR["shift_register_32bit.v<br/>Serial-to-Parallel Converter"]
+        SR -->|32-bit Bus| DATA["random_word [31:0]"]
+        SR -->|1-Cycle Pulse| VAL["word_valid"]
+    end
+
+    subgraph ANALYTICS["4. Real-Time Hardware Analytics"]
+        VNE -->|Conditioned Bitstream<br/>extracted_bit + extractor_valid| STATS["bit_statistics.v<br/>Statistical Diagnostics Engine"]
+        
+        STATS --> S1["total_bits [31:0]"]
+        STATS --> S2["ones_count [31:0]"]
+        STATS --> S3["zeros_count [31:0]"]
+        STATS --> S4["runs_count [31:0]"]
+        STATS --> S5["longest_run [31:0]"]
+    end
+
+    classDef nodeStyle fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef outStyle fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#f8fafc;
+    class RO,SMP,VNE,SR,STATS nodeStyle;
+    class DATA,VAL,S1,S2,S3,S4,S5 outStyle;
+```
 
 ## Key Features
 
-*   **Physical Jitter Entropy:** Exploits intrinsic FPGA hardware noise; no pre-computation.
-*   **Bias Correction:** Guarantees uniform 50% probability distribution using the mathematically proven Von Neumann method.
-*   **32-Bit Output Handshaking:** Outputs are presented as full 32-bit words qualified by a one-cycle `word_valid` pulse for seamless integration with CPU buses (e.g., AXI).
-*   **Integrated Diagnostics:** Provides five simultaneous 32-bit hardware diagnostic counters (`total_bits`, `ones`, `zeros`, `runs`, `longest_run`) for real-time monitoring.
-*   **Metastability Immune:** Includes necessary clock domain crossing (CDC) logic to prevent metastability between the asynchronous ROs and the system clock.
-*   **Ultra-Lean Footprint:** Optimized for minimal resource consumption.
+* **Physical Jitter Entropy:** Multiple independent ring oscillators merged via an XOR combiner to harvest intrinsic phase jitter.
+* **Metastability Protection:** 2-stage flip-flop synchronizer safely transitions asynchronous jitter into the system clock domain.
+* **Bias Conditioning:** Non-overlapping pair Von Neumann Extractor guarantees a uniform probability distribution:
+  * `00` $\rightarrow$ Discard
+  * `11` $\rightarrow$ Discard
+  * `01` $\rightarrow$ Output `0`
+  * `10` $\rightarrow$ Output `1`
+* **32-Bit Output Handshaking:** Formats conditioned bits into 32-bit words qualified by a single-cycle `word_valid` pulse.
+* **Real-Time Hardware Analytics:** Integrated diagnostics engine monitors `extracted_bit` streams enabled by `extractor_valid`, outputting five 32-bit metrics (`total_bits`, `ones_count`, `zeros_count`, `runs_count`, `longest_run`).
+* **Ultra-Lean Footprint:** Lightweight logic utilization suitable for embedded FPGA IP cores.
+
+## Repository Layout
+
+```text
+fpga-trng-core/
+├── rtl/
+│   ├── trng_top.v                 # Top-level IP integration wrapper
+│   ├── ro_bank.v                  # Ring oscillator bank + XOR combiner
+│   ├── ro_sampler.v               # 2-stage flip-flop synchronizer
+│   ├── von_neumann_extractor.v    # Non-overlapping pair bias corrector
+│   ├── shift_register_32bit.v     # 32-bit serial-to-parallel converter
+│   └── bit_statistics.v           # Real-time hardware analytics
+├── tb/
+│   ├── extractor_tb.v             # Extractor fault-model testbench
+│   └── trng_top_tb.v              # Top-level simulation testbench
+└── README.md
+```
 
 ## Synthesis Metrics (Xilinx 7-Series)
 
-The design was synthesized targeting Xilinx 7-Series FPGAs. Note the small footprint despite full parallel diagnostic buses.
+Targeting Xilinx 7-Series FPGAs in AMD/Xilinx Vivado:
 
 | Resource | Utilization Count | Available | Utilization % |
 | :--- | :--- | :--- | :--- |
 | **Slice LUTs** | **57** | 41,000 | < 0.2% |
 | **Slice Registers (FFs)** | **268** | 82,000 | < 0.4% |
 | **BUFGCTRL** | **1** | 32 | 3.1% |
-| **Bonded IOBs** | **196** (6x32-bit diagnostics + cntrl) | 300 | 65.3% |
+| **Bonded IOBs** | **196** (6x32-bit diagnostics + control) | 300 | 65.3% |
 
-*(Note on IOB Count: The high pin count of 196 reflects exposing all six 32-bit hardware analytical buses for verification. In a deployed System-on-Chip (SoC) context, these diagnostics are typically routed internally to an AXI bridge and do not consume physical pins.)*
+*(Note on IOB Count: The 196 Bonded IOB pin count reflects exposing all diagnostic and output buses at the top level for hardware verification. In an integrated SoC, diagnostic buses route internally to system interconnects like AXI4-Lite).*
 
 ## Verification & Simulation
 
-The design was verified through behavioral simulation using Xilinx Vivado.
-
 ### Fault-Model Verification: `extractor_tb.v`
 
-A robust test scenario was executed to prove the extractor's capability. We intentionally generated and injected a completely broken, **~76% biased fault stream** (where bits were '1' 76% of the time).
+The conditioning pipeline was verified using a deliberate **~76% high-bias fault stream** injected into the extractor:
 
-**Expected (and Verified) Outcome:**
-The `von_neumann_extractor.v` successfully processed the fault stream, discarded over 80% of the matching data pairs (`00` and `11`), and flattened the output distribution down to a perfect **~50.0% / ~50.0% split** across all valid bits counted. This verifies that the math behind the bias correction is working correctly in hardware.
-
-## Running the Project
-
-### System Requirements
-*   Xilinx Vivado Design Suite (any recent version supporting 7-Series).
-
-### Run Synthesis
-1.  Open Vivado and create a new RTL project.
-2.  Add all Verilog source files from the `rtl/` directory.
-3.  Add the testbench files from the `tb/` directory as simulation sources.
-4.  Set `trng_top.v` as your **Top Module**.
-5.  Run **Synthesis** under the Flow Navigator. Open the synthesized design and access **Project Summary $\rightarrow$ Utilization** to inspect resource counts.
-
-*(Note on Synthesis Warnings: Expect and ignore warnings regarding combinatorial loops within `ro_bank.v`—this is the intended behavior required to generate unclocked entropy.)*
-
-### Run Simulation
-1.  Set either `extractor_tb.v` or `trng_top_tb.v` as your Top simulation module.
-2.  Run **Behavioral Simulation** under the Flow Navigator.
-3.  Check the **Tcl Console** for a detailed text printout of the statistical results summarizing the total bits, ones/zeros count, and total run metrics after thousands of generated bits.
+* **Raw Stream:** 100,000 bits injected with heavy high-state bias.
+* **Conditioned Output:** The Von Neumann extractor discarded all non-matching pairs (`00` and `11`), yielding a conditioned bitstream with a **~50.0% / ~50.0% distribution** across all valid bits.
